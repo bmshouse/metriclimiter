@@ -1,0 +1,87 @@
+# Advanced Example: Cost Optimization with Rate Limiting
+#
+# This configuration demonstrates how to use the metric limiter processor
+# to reduce the volume of high-cardinality or expensive metrics sent to
+# downstream systems, reducing costs and improving performance.
+
+receivers:
+  # Scrape metrics from Prometheus
+  prometheus:
+    config:
+      scrape_configs:
+        - job_name: 'app-server'
+          scrape_interval: 15s
+          static_configs:
+            - targets: ['localhost:8080']
+
+        - job_name: 'database'
+          scrape_interval: 15s
+          static_configs:
+            - targets: ['localhost:5432']
+
+        - job_name: 'cache'
+          scrape_interval: 15s
+          static_configs:
+            - targets: ['localhost:6379']
+
+processors:
+  # Rate limit expensive metrics
+  metriclimiter:
+    # Allow these high-cardinality metrics only once per minute
+    metric_names:
+      - "http.request.histogram"      # High cardinality due to many endpoints
+      - "db.query.time"               # Expensive to generate
+      - "cache.operation.duration"    # High-volume metric
+      - "grpc.method.duration"        # Sampled from many RPC calls
+    rate_interval_seconds: 60
+
+  # Add another rate limiter for different interval
+  metriclimiter/expensive:
+    # Allow detailed trace metrics only every 5 minutes
+    metric_names:
+      - "detailed.allocation.profile"
+      - "gc.pause.histogram"
+      - "memory.detailed.breakdown"
+    rate_interval_seconds: 300
+
+  # Memory limit to prevent buffering too many metrics
+  memory_limiter:
+    check_interval: 5s
+    limit_mib: 512
+    spike_limit_mib: 128
+
+  # Batch processor for efficiency
+  batch:
+    send_batch_size: 1024
+    send_batch_max_size: 2048
+    timeout: 30s
+
+  # Resource detection
+  resource_detection:
+    detectors: [gcp, env, system]
+
+exporters:
+  # Primary: Send to Datadog
+  datadog:
+    api:
+      key: ${DATADOG_API_KEY}
+
+  # Secondary: Send sampled metrics to S3 for archival
+  otlp:
+    endpoint: s3://metrics-archive
+    compression: gzip
+
+service:
+  pipelines:
+    metrics:
+      receivers: [prometheus]
+      processors: [memory_limiter, metriclimiter, metriclimiter/expensive, batch, resource_detection]
+      exporters: [datadog, otlp]
+
+# Extensions for health checks and logging
+extensions:
+  health_check:
+    endpoint: localhost:8888
+
+  pprof:
+    endpoint: localhost:1777
