@@ -1,0 +1,67 @@
+
+# Binaries
+
+*.exe
+
+*.exe~
+
+*.dll
+
+*.so
+
+*.so.*
+
+*.dylib
+
+*.o
+
+*.out
+
+
+
+# Test binaries
+
+*.test
+
+
+
+# IDEs
+
+.vscode/
+
+.idea/
+
+*.swp
+
+*.swo
+
+*~
+
+
+
+# OS
+
+.DS_Store
+
+Thumbs.db
+
+
+
+# Go
+
+bin/
+
+dist/
+
+vendor/
+
+
+
+# Build artifacts
+
+/bin/
+
+/dist/
+
+*.tar.gz
+

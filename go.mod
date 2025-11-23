@@ -1,4 +1,4 @@
-module github.com/metriclimiter/metriclimiterprocessor
+module github.com/bmshouse/metriclimiter
 
 go 1.24.0
 

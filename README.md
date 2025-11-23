@@ -350,18 +350,29 @@ This processor follows the standard OpenTelemetry Collector processor pattern an
 
 ### Building the Collector with This Processor
 
-Add to your `otelcontribcol_builder.yaml`:
+Add to your `builder.yaml`:
 
 ```yaml
+dist:
+  name: otelcontribcol
+
 processors:
-  - gomod: github.com/metriclimiter/metriclimiterprocessor v1.0.0
+  - gomod: github.com/bmshouse/metriclimiter v0.1.0
+
+receivers:
+  - gomod: go.opentelemetry.io/collector/receiver/otlpreceiver v0.104.0
+
+exporters:
+  - gomod: go.opentelemetry.io/collector/exporter/otlpexporter v0.104.0
 ```
 
 Then build with the OpenTelemetry Collector Builder:
 
 ```bash
-ocb --config=otelcontribcol_builder.yaml
+ocb --config=builder.yaml
 ```
+
+This creates a binary at `./dist/otelcontribcol` (or `.exe` on Windows) with the metric limiter processor included.
 
 ## License
 
