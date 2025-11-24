@@ -374,6 +374,51 @@ ocb --config=builder.yaml
 
 This creates a binary at `./dist/otelcontribcol` (or `.exe` on Windows) with the metric limiter processor included.
 
+## ⚠️ Important: Multiple Collector Instances
+
+**Warning**: This processor operates independently on each collector instance with **no coordination between instances**.
+
+### The Risk
+
+If you run multiple collector instances with the metric limiter processor configured, each instance will apply the rate limit independently. This means **the total system throughput will be multiplied by the number of instances**, potentially exceeding your intended rate limit.
+
+### Example
+
+Configuration:
+```yaml
+processors:
+  metriclimiter:
+    metric_names:
+      - "http.server.request.duration"
+    rate_interval_seconds: 60  # Allow 1 metric per minute
+```
+
+Deployment scenarios:
+
+| Scenario | Instance Count | Configured Limit | Actual System Behavior |
+|----------|---|---|---|
+| Single Collector | 1 | 1 metric/min | ✅ 1 metric/min total |
+| Multiple Collectors | 3 | 1 metric/min | ⚠️ Up to 3 metrics/min total |
+| Multiple Collectors | 5 | 1 metric/min | ⚠️ Up to 5 metrics/min total |
+
+### Why This Happens
+
+Each collector instance maintains its own isolated rate limiting state:
+- Instance 1 tracks metrics independently
+- Instance 2 tracks metrics independently
+- Instance 3 tracks metrics independently
+- **No communication between instances**
+
+Therefore, if metric `http.server.request.duration` arrives at different instances, each instance may allow it through based on its own independent tracking, resulting in multiple metrics passing through per rate interval.
+
+### When This Matters
+
+This is **important to understand** when:
+- Running collectors in a load-balanced cluster
+- Running collectors across multiple data centers
+- Running collectors in a high-availability setup
+- Metrics may be routed to different collector instances
+
 ## License
 
 Same as OpenTelemetry Collector (Apache 2.0)
