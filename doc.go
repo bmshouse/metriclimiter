@@ -33,8 +33,9 @@
 // - Thread-safe concurrent access (mutex for name-only, LRU cache for per-label-set)
 // - Zero-copy metric filtering using RemoveIf()
 // - Minimal memory overhead:
-//   * Name-only mode: ~8 bytes per tracked metric
-//   * Per-label-set mode: ~8 bytes per unique label combination (vs. 100+ with string concat)
+//   - Name-only mode: ~8 bytes per tracked metric
+//   - Per-label-set mode: ~8 bytes per unique label combination (vs. 100+ with string concat)
+//
 // - Pre-compiled metric name lookup maps
 // - Pre-calculated rate intervals for efficiency
 // - LRU cache with automatic eviction for bounded memory usage
