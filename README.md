@@ -355,16 +355,24 @@ Add to your `builder.yaml`:
 ```yaml
 dist:
   name: otelcontribcol
+  otelcol_version: 0.140.0
 
 processors:
   - gomod: github.com/bmshouse/metriclimiter v0.1.0
 
 receivers:
-  - gomod: go.opentelemetry.io/collector/receiver/otlpreceiver v0.104.0
+  - gomod: go.opentelemetry.io/collector/receiver/otlpreceiver v0.140.0
 
 exporters:
-  - gomod: go.opentelemetry.io/collector/exporter/otlpexporter v0.104.0
+  - gomod: go.opentelemetry.io/collector/exporter/otlpexporter v0.140.0
 ```
+
+**⚠️ Version Compatibility**: This processor requires specific OpenTelemetry Collector versions:
+- **Core components** (component, processor, consumer): v1.46.0 or later
+- **Distribution version** (otelcol_version): v0.140.0 or later
+- **All receivers/exporters/plugins**: v0.140.0 or later
+
+Using older versions (e.g., v0.104.0 or v1.x versions older than 1.46.0) will result in build errors due to API incompatibilities. Ensure all components in your `builder.yaml` use compatible versions.
 
 Then build with the OpenTelemetry Collector Builder:
 
