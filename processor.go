@@ -30,10 +30,12 @@ type metricConfig struct {
 	cardinalityTTLNanos int64
 
 	// For name-only rate limiting (perLabelSet = false)
+	// Uses interval epoch tracking to eliminate timestamp drift
 	lastSeenNameMu sync.Mutex
-	lastSeenName   int64
+	lastSeenEpoch  int64 // Epoch number (timestamp / rateIntervalNanos)
 
 	// For per-label-set rate limiting (perLabelSet = true)
+	// Maps hash key -> epoch number for each label set
 	lastSeenLabelSets *lru.Cache[uint64, int64]
 
 	// For logging/monitoring
@@ -112,19 +114,21 @@ func (p *metricLimiterProcessor) shouldDropMetric(metric pmetric.Metric) bool {
 
 // shouldDropByName determines if a metric should be dropped based on metric name only.
 // This implements name-only rate limiting mode for backward compatibility.
-// It uses a mutex-protected timestamp to track the last seen occurrence.
+// Uses interval epoch tracking to eliminate timestamp drift and ensure consistent
+// "1 metric per interval" behavior without clock skew.
 // Returns true if the metric is within the rate interval (should drop), false otherwise.
 func (p *metricLimiterProcessor) shouldDropByName(mc *metricConfig) bool {
 	mc.lastSeenNameMu.Lock()
 	defer mc.lastSeenNameMu.Unlock()
 
 	now := time.Now().UnixNano()
+	currentEpoch := now / mc.rateIntervalNanos
 
-	if mc.lastSeenName > 0 {
-		timeSinceLastSeen := now - mc.lastSeenName
-
-		if timeSinceLastSeen < mc.rateIntervalNanos {
-			// Within rate interval: DROP
+	if mc.lastSeenEpoch > 0 {
+		if currentEpoch == mc.lastSeenEpoch {
+			// Same interval epoch: DROP
+			// Calculate time since last seen for logging purposes
+			timeSinceLastSeen := now - (mc.lastSeenEpoch * mc.rateIntervalNanos)
 			mc.droppedCount++
 			p.logger.Debug("dropping rate-limited metric (by name)",
 				zap.String("metric", mc.name),
@@ -135,8 +139,8 @@ func (p *metricLimiterProcessor) shouldDropByName(mc *metricConfig) bool {
 		}
 	}
 
-	// Not seen before or outside rate interval: ALLOW and record timestamp
-	mc.lastSeenName = now
+	// Not seen before or in different epoch: ALLOW and record epoch
+	mc.lastSeenEpoch = currentEpoch
 	mc.allowedCount++
 	p.logger.Debug("allowing metric (by name)",
 		zap.String("metric", mc.name),
@@ -147,20 +151,23 @@ func (p *metricLimiterProcessor) shouldDropByName(mc *metricConfig) bool {
 // shouldDropByLabelSet determines if a metric should be dropped based on metric name + attributes.
 // This implements per-label-set rate limiting mode using an LRU cache.
 // Each unique combination of metric name and attribute values is tracked independently.
+// Uses interval epoch tracking to eliminate timestamp drift and ensure consistent behavior.
 // Returns true if the label set is within the rate interval (should drop), false otherwise.
 func (p *metricLimiterProcessor) shouldDropByLabelSet(mc *metricConfig, attributes pcommon.Map) bool {
 	// Generate hash key from metric name + attributes
 	key := p.generateHashKey(mc.name, attributes)
 
 	now := time.Now().UnixNano()
+	currentEpoch := now / mc.rateIntervalNanos
 
-	// Check LRU cache for last seen timestamp
-	if lastSeenAny, ok := mc.lastSeenLabelSets.Get(key); ok {
-		lastSeen := lastSeenAny
-		timeSinceLastSeen := now - lastSeen
+	// Check LRU cache for last seen epoch
+	if lastSeenEpochAny, ok := mc.lastSeenLabelSets.Get(key); ok {
+		lastSeenEpoch := lastSeenEpochAny
 
-		if timeSinceLastSeen < mc.rateIntervalNanos {
-			// Within rate interval: DROP
+		if currentEpoch == lastSeenEpoch {
+			// Same interval epoch: DROP
+			// Calculate time since last seen for logging purposes
+			timeSinceLastSeen := now - (lastSeenEpoch * mc.rateIntervalNanos)
 			mc.droppedCount++
 			p.logger.Debug("dropping rate-limited metric (by label set)",
 				zap.String("metric", mc.name),
@@ -171,8 +178,8 @@ func (p *metricLimiterProcessor) shouldDropByLabelSet(mc *metricConfig, attribut
 		}
 	}
 
-	// Not seen before or outside rate interval: ALLOW and record timestamp
-	mc.lastSeenLabelSets.Add(key, now)
+	// Not seen before or in different epoch: ALLOW and record epoch
+	mc.lastSeenLabelSets.Add(key, currentEpoch)
 	mc.allowedCount++
 	p.logger.Debug("allowing metric (by label set)",
 		zap.String("metric", mc.name),
