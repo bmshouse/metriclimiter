@@ -1,0 +1,53 @@
+name: Tests
+
+on:
+  pull_request:
+    paths:
+      - 'metriclimiterprocessor/**'
+      - 'go.mod'
+      - 'go.sum'
+      - '.github/workflows/tests.yml'
+
+jobs:
+  tests:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v4
+        with:
+          go-version: '1.24'
+
+      - name: Check code formatting
+        run: |
+          if [ "$(gofmt -l . | wc -l)" -gt 0 ]; then
+            echo "Code formatting errors found. Run 'go fmt ./...' to fix:"
+            gofmt -l .
+            exit 1
+          fi
+        working-directory: metriclimiterprocessor
+
+      - name: Run go vet
+        run: go vet ./...
+        working-directory: metriclimiterprocessor
+
+      - name: Check module tidiness
+        run: |
+          go mod tidy
+          if [ -n "$(git diff go.mod go.sum)" ]; then
+            echo "go.mod or go.sum not tidy. Run 'go mod tidy' to fix."
+            git diff go.mod go.sum
+            exit 1
+          fi
+        working-directory: metriclimiterprocessor
+
+      - name: Run tests
+        run: go test -v ./...
+        working-directory: metriclimiterprocessor
+
+      - name: Run tests with race detector
+        run: go test -race ./...
+        working-directory: metriclimiterprocessor
