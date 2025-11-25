@@ -682,3 +682,242 @@ func TestBenchmark_HashKeyGeneration(t *testing.T) {
 	assert.Equal(t, 10000, keys[processor.generateHashKey("http.request.duration", attrs)],
 		"all 10000 iterations should produce same key")
 }
+
+// Test: Extract attributes from different metric types
+func TestExtractAttributes_Gauge(t *testing.T) {
+	processor := &metricLimiterProcessor{
+		logger:         zaptest.NewLogger(t),
+		limitedMetrics: make(map[string]*metricConfig),
+	}
+
+	// Create a Gauge metric with attributes
+	metrics := pmetric.NewMetrics()
+	rm := metrics.ResourceMetrics().AppendEmpty()
+	sm := rm.ScopeMetrics().AppendEmpty()
+	metric := sm.Metrics().AppendEmpty()
+	metric.SetName("test.gauge")
+
+	gauge := metric.SetEmptyGauge()
+	dp := gauge.DataPoints().AppendEmpty()
+	dp.SetDoubleValue(42.0)
+	dp.Attributes().PutStr("instance", "i-1")
+	dp.Attributes().PutStr("method", "GET")
+
+	// Extract attributes
+	attrs := processor.extractAttributes(metric)
+
+	// Verify attributes were extracted
+	assert.Equal(t, 2, attrs.Len(), "should have 2 attributes")
+	val, exists := attrs.Get("instance")
+	assert.True(t, exists, "should have instance attribute")
+	assert.Equal(t, "i-1", val.AsString(), "instance should be i-1")
+	val, exists = attrs.Get("method")
+	assert.True(t, exists, "should have method attribute")
+	assert.Equal(t, "GET", val.AsString(), "method should be GET")
+}
+
+// Test: Extract attributes from Sum metric
+func TestExtractAttributes_Sum(t *testing.T) {
+	processor := &metricLimiterProcessor{
+		logger:         zaptest.NewLogger(t),
+		limitedMetrics: make(map[string]*metricConfig),
+	}
+
+	// Create a Sum metric with attributes
+	metrics := pmetric.NewMetrics()
+	rm := metrics.ResourceMetrics().AppendEmpty()
+	sm := rm.ScopeMetrics().AppendEmpty()
+	metric := sm.Metrics().AppendEmpty()
+	metric.SetName("test.counter")
+
+	sum := metric.SetEmptySum()
+	dp := sum.DataPoints().AppendEmpty()
+	dp.SetIntValue(100)
+	dp.Attributes().PutStr("service", "api")
+	dp.Attributes().PutStr("endpoint", "/users")
+
+	// Extract attributes
+	attrs := processor.extractAttributes(metric)
+
+	// Verify attributes were extracted
+	assert.Equal(t, 2, attrs.Len(), "should have 2 attributes")
+	val, exists := attrs.Get("service")
+	assert.True(t, exists, "should have service attribute")
+	assert.Equal(t, "api", val.AsString(), "service should be api")
+	val, exists = attrs.Get("endpoint")
+	assert.True(t, exists, "should have endpoint attribute")
+	assert.Equal(t, "/users", val.AsString(), "endpoint should be /users")
+}
+
+// Test: Per-label-set with actual metric data points
+func TestShouldDropMetric_PerLabelSet_WithAttributes(t *testing.T) {
+	processor := &metricLimiterProcessor{
+		config: &Config{
+			RateIntervalSeconds:     1, // 1 second for testing
+			PerLabelSet:             true,
+			MaxCardinalityPerMetric: 100000,
+		},
+		logger:         zaptest.NewLogger(t),
+		limitedMetrics: make(map[string]*metricConfig),
+	}
+
+	// Create metric config for per-label-set mode
+	mc, err := processor.getMetricConfig("http.request.duration", processor.config)
+	assert.NoError(t, err)
+	processor.limitedMetrics["http.request.duration"] = mc
+
+	// Create first metric with attributes instance=i-1, method=GET
+	metric1 := pmetric.NewMetrics()
+	rm1 := metric1.ResourceMetrics().AppendEmpty()
+	sm1 := rm1.ScopeMetrics().AppendEmpty()
+	m1 := sm1.Metrics().AppendEmpty()
+	m1.SetName("http.request.duration")
+	gauge1 := m1.SetEmptyGauge()
+	dp1 := gauge1.DataPoints().AppendEmpty()
+	dp1.SetDoubleValue(100.0)
+	dp1.Attributes().PutStr("instance", "i-1")
+	dp1.Attributes().PutStr("method", "GET")
+
+	// Create second metric with attributes instance=i-1, method=POST (different label set)
+	metric2 := pmetric.NewMetrics()
+	rm2 := metric2.ResourceMetrics().AppendEmpty()
+	sm2 := rm2.ScopeMetrics().AppendEmpty()
+	m2 := sm2.Metrics().AppendEmpty()
+	m2.SetName("http.request.duration")
+	gauge2 := m2.SetEmptyGauge()
+	dp2 := gauge2.DataPoints().AppendEmpty()
+	dp2.SetDoubleValue(200.0)
+	dp2.Attributes().PutStr("instance", "i-1")
+	dp2.Attributes().PutStr("method", "POST")
+
+	// Create third metric with attributes instance=i-2, method=GET (different label set)
+	metric3 := pmetric.NewMetrics()
+	rm3 := metric3.ResourceMetrics().AppendEmpty()
+	sm3 := rm3.ScopeMetrics().AppendEmpty()
+	m3 := sm3.Metrics().AppendEmpty()
+	m3.SetName("http.request.duration")
+	gauge3 := m3.SetEmptyGauge()
+	dp3 := gauge3.DataPoints().AppendEmpty()
+	dp3.SetDoubleValue(300.0)
+	dp3.Attributes().PutStr("instance", "i-2")
+	dp3.Attributes().PutStr("method", "GET")
+
+	// Process metrics through shouldDropMetric
+	dropped1 := processor.shouldDropMetric(m1)
+	assert.False(t, dropped1, "first occurrence of i-1/GET should be allowed")
+
+	dropped2 := processor.shouldDropMetric(m2)
+	assert.False(t, dropped2, "first occurrence of i-1/POST should be allowed (different label set)")
+
+	dropped3 := processor.shouldDropMetric(m3)
+	assert.False(t, dropped3, "first occurrence of i-2/GET should be allowed (different label set)")
+
+	// All three unique label sets should be tracked independently
+	assert.Equal(t, int64(3), mc.allowedCount, "should have allowed 3 unique label sets")
+	assert.Equal(t, int64(0), mc.droppedCount, "should have dropped 0 on first occurrence")
+
+	// Second occurrences within rate interval should be dropped
+	dropped1_2 := processor.shouldDropMetric(m1)
+	assert.True(t, dropped1_2, "second occurrence of i-1/GET within interval should be dropped")
+
+	dropped2_2 := processor.shouldDropMetric(m2)
+	assert.True(t, dropped2_2, "second occurrence of i-1/POST within interval should be dropped")
+
+	dropped3_2 := processor.shouldDropMetric(m3)
+	assert.True(t, dropped3_2, "second occurrence of i-2/GET within interval should be dropped")
+
+	assert.Equal(t, int64(3), mc.droppedCount, "should have dropped 3 within-interval occurrences")
+}
+
+// Test: Different label combinations produce different hash keys through actual metrics
+func TestShouldDropMetric_LabelDifferentiation(t *testing.T) {
+	processor := &metricLimiterProcessor{
+		config: &Config{
+			RateIntervalSeconds:     60,
+			PerLabelSet:             true,
+			MaxCardinalityPerMetric: 100000,
+		},
+		logger:         zaptest.NewLogger(t),
+		limitedMetrics: make(map[string]*metricConfig),
+	}
+
+	// Create metric config
+	mc, err := processor.getMetricConfig("application.metric", processor.config)
+	assert.NoError(t, err)
+	processor.limitedMetrics["application.metric"] = mc
+
+	// Create test data: matchbox-web and experiment-web with same metric name
+	testCases := []struct {
+		name   string
+		attrs  map[string]string
+		expect bool // First metric should be allowed
+	}{
+		{
+			name: "matchbox-web service",
+			attrs: map[string]string{
+				"service_name": "matchbox-web",
+				"environment":  "staging",
+			},
+			expect: false, // Should be allowed (not dropped)
+		},
+		{
+			name: "experiment-web service",
+			attrs: map[string]string{
+				"service_name": "experiment-web",
+				"environment":  "staging",
+			},
+			expect: false, // Should be allowed (not dropped)
+		},
+		{
+			name: "another-service",
+			attrs: map[string]string{
+				"service_name": "another-web",
+				"environment":  "staging",
+			},
+			expect: false, // Should be allowed (not dropped)
+		},
+	}
+
+	// First pass: all should be allowed (first occurrence)
+	for _, tc := range testCases {
+		metric := pmetric.NewMetrics()
+		rm := metric.ResourceMetrics().AppendEmpty()
+		sm := rm.ScopeMetrics().AppendEmpty()
+		m := sm.Metrics().AppendEmpty()
+		m.SetName("application.metric")
+		gauge := m.SetEmptyGauge()
+		dp := gauge.DataPoints().AppendEmpty()
+		dp.SetDoubleValue(1.0)
+		for k, v := range tc.attrs {
+			dp.Attributes().PutStr(k, v)
+		}
+
+		dropped := processor.shouldDropMetric(m)
+		assert.Equal(t, tc.expect, dropped, "%s first occurrence: should be allowed", tc.name)
+	}
+
+	// Verify that each unique label set was tracked independently
+	assert.Equal(t, int64(3), mc.allowedCount, "should have allowed 3 unique label sets")
+	assert.Equal(t, int64(0), mc.droppedCount, "no metrics should be dropped on first occurrence")
+
+	// Second pass: all should be dropped (within 60 second interval)
+	for _, tc := range testCases {
+		metric := pmetric.NewMetrics()
+		rm := metric.ResourceMetrics().AppendEmpty()
+		sm := rm.ScopeMetrics().AppendEmpty()
+		m := sm.Metrics().AppendEmpty()
+		m.SetName("application.metric")
+		gauge := m.SetEmptyGauge()
+		dp := gauge.DataPoints().AppendEmpty()
+		dp.SetDoubleValue(2.0)
+		for k, v := range tc.attrs {
+			dp.Attributes().PutStr(k, v)
+		}
+
+		dropped := processor.shouldDropMetric(m)
+		assert.True(t, dropped, "%s second occurrence: should be dropped", tc.name)
+	}
+
+	// Verify all were dropped
+	assert.Equal(t, int64(3), mc.droppedCount, "should have dropped 3 within-interval occurrences")
+}
