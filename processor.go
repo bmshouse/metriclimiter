@@ -106,10 +106,39 @@ func (p *metricLimiterProcessor) shouldDropMetric(metric pmetric.Metric) bool {
 		return p.shouldDropByName(mc)
 	}
 
-	// Rate limit by label set - aggregate attributes from all data points
-	// For now, we'll use the metric name only for per-label-set when we have multiple data points
-	// In a real implementation, you'd need to track each data point separately
-	return p.shouldDropByLabelSet(mc, pcommon.NewMap())
+	// Rate limit by label set - extract attributes from metric data points
+	// For per-label-set mode, we need to check each data point's attributes
+	return p.shouldDropByLabelSet(mc, p.extractAttributes(metric))
+}
+
+// extractAttributes extracts attributes from a metric's data points.
+// Handles all metric types: Gauge, Sum, Histogram, ExponentialHistogram, Summary.
+// Returns the attributes from the first data point found.
+func (p *metricLimiterProcessor) extractAttributes(metric pmetric.Metric) pcommon.Map {
+	switch metric.Type() {
+	case pmetric.MetricTypeGauge:
+		if dp := metric.Gauge().DataPoints(); dp.Len() > 0 {
+			return dp.At(0).Attributes()
+		}
+	case pmetric.MetricTypeSum:
+		if dp := metric.Sum().DataPoints(); dp.Len() > 0 {
+			return dp.At(0).Attributes()
+		}
+	case pmetric.MetricTypeHistogram:
+		if dp := metric.Histogram().DataPoints(); dp.Len() > 0 {
+			return dp.At(0).Attributes()
+		}
+	case pmetric.MetricTypeExponentialHistogram:
+		if dp := metric.ExponentialHistogram().DataPoints(); dp.Len() > 0 {
+			return dp.At(0).Attributes()
+		}
+	case pmetric.MetricTypeSummary:
+		if dp := metric.Summary().DataPoints(); dp.Len() > 0 {
+			return dp.At(0).Attributes()
+		}
+	}
+	// Fallback to empty map if no data points found
+	return pcommon.NewMap()
 }
 
 // shouldDropByName determines if a metric should be dropped based on metric name only.
@@ -123,25 +152,12 @@ func (p *metricLimiterProcessor) shouldDropByName(mc *metricConfig) bool {
 
 	now := time.Now().UnixNano()
 
-	// Protection: Handle backward time adjustments (NTP, clock sync, VM pause/resume)
-	if mc.lastSeenTimestamp > 0 && now < mc.lastSeenTimestamp {
-		p.logger.Warn("detected backward time adjustment, resetting rate limiter",
-			zap.String("metric", mc.name),
-			zap.Int64("time_diff_ms", (mc.lastSeenTimestamp-now)/1e6),
-		)
-		mc.lastSeenTimestamp = 0
-	}
-
 	if mc.lastSeenTimestamp > 0 {
 		timeSinceLastSeen := now - mc.lastSeenTimestamp
 
-		// Use <= to ensure exact rate_interval_seconds between metrics
-		// Example: last metric at 10:00:00, next metric at 10:01:00 (exactly 60s)
-		// timeSinceLastSeen = 60e9 nanoseconds
-		// If we used <, 60e9 < 60e9 = false, metric allowed (CORRECT)
-		// But if metric at 10:01:00.000000001, timeSinceLastSeen = 60e9 + 1
-		// To prevent microsecond-level drift, we use <= instead of <
-		if timeSinceLastSeen <= mc.rateIntervalNanos {
+		// Use < to check if within rate interval (not yet elapsed)
+		// A metric is allowed if at least rate_interval_seconds have passed
+		if timeSinceLastSeen < mc.rateIntervalNanos {
 			// Within rate interval: DROP
 			mc.droppedCount++
 			p.logger.Debug("dropping rate-limited metric (by name)",
@@ -176,30 +192,19 @@ func (p *metricLimiterProcessor) shouldDropByLabelSet(mc *metricConfig, attribut
 	// Check LRU cache for last seen timestamp
 	if lastSeenTimestampAny, ok := mc.lastSeenLabelSets.Get(key); ok {
 		lastSeenTimestamp := lastSeenTimestampAny
+		timeSinceLastSeen := now - lastSeenTimestamp
 
-		// Protection: Handle backward time adjustments (NTP, clock sync, VM pause/resume)
-		if now < lastSeenTimestamp {
-			p.logger.Warn("detected backward time adjustment for label set",
+		// Use < to check if within rate interval (not yet elapsed)
+		// A metric is allowed if at least rate_interval_seconds have passed
+		if timeSinceLastSeen < mc.rateIntervalNanos {
+			// Within rate interval: DROP
+			mc.droppedCount++
+			p.logger.Debug("dropping rate-limited metric (by label set)",
 				zap.String("metric", mc.name),
 				zap.Uint64("key", key),
-				zap.Int64("time_diff_ms", (lastSeenTimestamp-now)/1e6),
+				zap.Int64("time_since_last_ms", timeSinceLastSeen/1e6),
 			)
-			// Don't return - allow this metric and update the timestamp
-		} else {
-			timeSinceLastSeen := now - lastSeenTimestamp
-
-			// Use <= to ensure exact rate_interval_seconds between metrics
-			// This ensures exactly 1 metric per label set per interval with no phase drift
-			if timeSinceLastSeen <= mc.rateIntervalNanos {
-				// Within rate interval: DROP
-				mc.droppedCount++
-				p.logger.Debug("dropping rate-limited metric (by label set)",
-					zap.String("metric", mc.name),
-					zap.Uint64("key", key),
-					zap.Int64("time_since_last_ms", timeSinceLastSeen/1e6),
-				)
-				return true
-			}
+			return true
 		}
 	}
 
