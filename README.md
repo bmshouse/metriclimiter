@@ -358,7 +358,7 @@ dist:
   otelcol_version: 0.140.0
 
 processors:
-  - gomod: github.com/bmshouse/metriclimiter v0.1.0
+  - gomod: github.com/bmshouse/metriclimiter v0.4.0
 
 receivers:
   - gomod: go.opentelemetry.io/collector/receiver/otlpreceiver v0.140.0
