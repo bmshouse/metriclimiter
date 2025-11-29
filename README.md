@@ -1,6 +1,14 @@
 # Metric Limiter Processor
 
-The metric limiter processor limits the rate at which specific metrics are processed by the OpenTelemetry Collector. When a metric name matches the configured list, the processor will only allow it to pass through once per the configured rate interval. Additional metrics within that interval will be dropped.
+The Metric Limiter Processor is an OpenTelemetry Collector plugin that implements intelligent rate limiting for metric
+throughput to reduce costs and system load. It operates in two modes: a simple name-only mode that tracks each metric        
+once per configured interval with minimal memory overhead, and an advanced per-label-set mode that uses xxHash64 hashing     
+and an LRU cache to track unique label combinations independently with O(1) lookups—enabling precise rate limiting even      
+for high-cardinality metrics with thousands of label variations. The processor provides per-metric configuration
+overrides for fine-grained control, enforces configurable cardinality limits to prevent unbounded memory growth, and
+integrates seamlessly into OpenTelemetry Collector pipelines while maintaining thread safety through either mutex
+protection or internally-safe cache operations, making it ideal for environments where metric volume needs strict
+governance without data loss.
 
 ## Configuration
 
