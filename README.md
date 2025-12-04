@@ -15,7 +15,7 @@ The Metric Limiter Processor is an OpenTelemetry Collector plugin that implement
 - [Feature status (implemented vs. future)](#feature-status-implemented-vs-future)
 - [Testing](#testing)
 - [Integration with OpenTelemetry Collector](#integration-with-opentelemetry-collector)
-- [Important: Multiple Collector Instances](#important-multiple-collector-instances)
+- [Important: Multiple Collector Instances](#important-multiple-collector-instances) ⚠️ 
 - [License](#license)
 
 ## Configuration
@@ -424,7 +424,7 @@ ocb --config=builder.yaml
 
 This creates a binary at `./dist/otelcontribcol` (or `.exe` on Windows) with the metric limiter processor included.
 
-## ⚠️ Important: Multiple Collector Instances
+## Important: Multiple Collector Instances
 
 **Warning**: This processor operates independently on each collector instance with **no coordination between instances**.
 
