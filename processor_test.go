@@ -921,3 +921,145 @@ func TestShouldDropMetric_LabelDifferentiation(t *testing.T) {
 	// Verify all were dropped
 	assert.Equal(t, int64(3), mc.droppedCount, "should have dropped 3 within-interval occurrences")
 }
+
+// New tests for per-data-point behavior inside a single Metric
+func TestProcessMetrics_PerDataPoint_PerLabelSet(t *testing.T) {
+	processor := &metricLimiterProcessor{
+		config: &Config{
+			RateIntervalSeconds:     1,
+			PerLabelSet:             true,
+			MaxCardinalityPerMetric: 100000,
+		},
+		logger:         zaptest.NewLogger(t),
+		limitedMetrics: make(map[string]*metricConfig),
+	}
+
+	mc, err := processor.getMetricConfig("test.metric", processor.config)
+	assert.NoError(t, err)
+	processor.limitedMetrics["test.metric"] = mc
+
+	// Create a single Metric with three data points: A, B, A
+	metrics := pmetric.NewMetrics()
+	rm := metrics.ResourceMetrics().AppendEmpty()
+	sm := rm.ScopeMetrics().AppendEmpty()
+	m := sm.Metrics().AppendEmpty()
+	m.SetName("test.metric")
+	g := m.SetEmptyGauge()
+
+	// dp A
+	dpA1 := g.DataPoints().AppendEmpty()
+	dpA1.SetDoubleValue(1.0)
+	dpA1.Attributes().PutStr("instance", "i-1")
+
+	// dp B
+	dpB := g.DataPoints().AppendEmpty()
+	dpB.SetDoubleValue(2.0)
+	dpB.Attributes().PutStr("instance", "i-2")
+
+	// dp A (duplicate label set)
+	dpA2 := g.DataPoints().AppendEmpty()
+	dpA2.SetDoubleValue(3.0)
+	dpA2.Attributes().PutStr("instance", "i-1")
+
+	// Process metrics: first A and B allowed, second A dropped
+	result, err := processor.processMetrics(context.Background(), metrics)
+	assert.NoError(t, err)
+
+	// Metric should remain and have 2 data points (A1 and B)
+	resMetrics := result.ResourceMetrics().At(0).ScopeMetrics().At(0).Metrics()
+	assert.Equal(t, 1, resMetrics.Len(), "one metric should remain")
+	got := resMetrics.At(0).Gauge().DataPoints().Len()
+	assert.Equal(t, 2, got, "should have 2 allowed data points (A and B)")
+
+	// Counts: allowed should be 2 (first A, first B), dropped 1 (second A)
+	assert.Equal(t, int64(2), mc.allowedCount)
+	assert.Equal(t, int64(1), mc.droppedCount)
+}
+
+func TestProcessMetrics_PerDataPoint_NameOnly(t *testing.T) {
+	processor := &metricLimiterProcessor{
+		config: &Config{
+			RateIntervalSeconds:     60,
+			PerLabelSet:             false,
+			MaxCardinalityPerMetric: 100000,
+		},
+		logger:         zaptest.NewLogger(t),
+		limitedMetrics: make(map[string]*metricConfig),
+	}
+
+	mc, err := processor.getMetricConfig("test.nameonly", processor.config)
+	assert.NoError(t, err)
+	processor.limitedMetrics["test.nameonly"] = mc
+
+	// Single metric with three data points (different attributes)
+	metrics := pmetric.NewMetrics()
+	rm := metrics.ResourceMetrics().AppendEmpty()
+	sm := rm.ScopeMetrics().AppendEmpty()
+	m := sm.Metrics().AppendEmpty()
+	m.SetName("test.nameonly")
+	g := m.SetEmptyGauge()
+
+	dp1 := g.DataPoints().AppendEmpty()
+	dp1.SetDoubleValue(1.0)
+	dp1.Attributes().PutStr("a", "1")
+
+	dp2 := g.DataPoints().AppendEmpty()
+	dp2.SetDoubleValue(2.0)
+	dp2.Attributes().PutStr("a", "2")
+
+	dp3 := g.DataPoints().AppendEmpty()
+	dp3.SetDoubleValue(3.0)
+	dp3.Attributes().PutStr("a", "3")
+
+	result, err := processor.processMetrics(context.Background(), metrics)
+	assert.NoError(t, err)
+
+	// Name-only mode should allow only the first data point
+	resMetrics := result.ResourceMetrics().At(0).ScopeMetrics().At(0).Metrics()
+	assert.Equal(t, 1, resMetrics.Len(), "one metric should remain")
+	got := resMetrics.At(0).Gauge().DataPoints().Len()
+	assert.Equal(t, 1, got, "should have only 1 allowed data point in name-only mode")
+
+	// Counts: allowed 1, dropped 2
+	assert.Equal(t, int64(1), mc.allowedCount)
+	assert.Equal(t, int64(2), mc.droppedCount)
+}
+
+func TestProcessMetrics_RemoveEmptyMetric(t *testing.T) {
+	processor := &metricLimiterProcessor{
+		logger:         zaptest.NewLogger(t),
+		limitedMetrics: make(map[string]*metricConfig),
+	}
+
+	// Create metric config that will cause immediate drops by setting lastSeenTimestamp to now
+	mc := &metricConfig{
+		name:              "test.remove",
+		rateIntervalNanos: 60 * 1e9,
+		lastSeenTimestamp: time.Now().UnixNano(),
+	}
+	processor.limitedMetrics["test.remove"] = mc
+
+	// Create a metric with two data points that should both be dropped
+	metrics := pmetric.NewMetrics()
+	rm := metrics.ResourceMetrics().AppendEmpty()
+	sm := rm.ScopeMetrics().AppendEmpty()
+	m := sm.Metrics().AppendEmpty()
+	m.SetName("test.remove")
+	g := m.SetEmptyGauge()
+
+	dp1 := g.DataPoints().AppendEmpty()
+	dp1.SetDoubleValue(1.0)
+	dp2 := g.DataPoints().AppendEmpty()
+	dp2.SetDoubleValue(2.0)
+
+	result, err := processor.processMetrics(context.Background(), metrics)
+	assert.NoError(t, err)
+
+	// Metric should be removed entirely (no metrics remain)
+	resRM := result.ResourceMetrics()
+	assert.Equal(t, 1, resRM.Len(), "resource metrics should still exist")
+	resSM := resRM.At(0).ScopeMetrics()
+	assert.Equal(t, 1, resSM.Len(), "scope metrics should still exist")
+	resMetrics := resSM.At(0).Metrics()
+	assert.Equal(t, 0, resMetrics.Len(), "metric with all data points dropped should be removed")
+}

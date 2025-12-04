@@ -151,6 +151,24 @@ func (p *metricLimiterProcessor) processMetrics(
 					// Unknown/unsupported metric type: do nothing
 				}
 			}
+
+			// Remove any metrics that now have zero data points (all data points were filtered).
+			metrics.RemoveIf(func(metric pmetric.Metric) bool {
+				switch metric.Type() {
+				case pmetric.MetricTypeGauge:
+					return metric.Gauge().DataPoints().Len() == 0
+				case pmetric.MetricTypeSum:
+					return metric.Sum().DataPoints().Len() == 0
+				case pmetric.MetricTypeHistogram:
+					return metric.Histogram().DataPoints().Len() == 0
+				case pmetric.MetricTypeExponentialHistogram:
+					return metric.ExponentialHistogram().DataPoints().Len() == 0
+				case pmetric.MetricTypeSummary:
+					return metric.Summary().DataPoints().Len() == 0
+				default:
+					return false
+				}
+			})
 		}
 	}
 
