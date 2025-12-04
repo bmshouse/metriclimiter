@@ -2,6 +2,22 @@
 
 The Metric Limiter Processor is an OpenTelemetry Collector plugin that implements intelligent rate limiting for metric throughput to reduce costs and system load. It operates in two modes: a simple name-only mode that tracks each metric once per configured interval with minimal memory overhead, and an advanced per-label-set mode that uses xxHash64 hashing and an LRU cache to track unique label  combinations independently with O(1) lookups—enabling precise rate limiting even for high-cardinality metrics with thousands of label variations. The processor provides per-metric configuration overrides for fine-grained control, enforces configurable cardinality limits to prevent unbounded memory growth, and integrates seamlessly into OpenTelemetry Collector pipelines while maintaining thread safety through either mutex protection or internally-safe cache operations, making it ideal for environments where metric volume needs strict governance without data loss.
 
+## Table of Contents
+
+- [Configuration](#configuration)
+- [Configuration Options](#configuration-options)
+- [Example Configurations](#example-configurations)
+- [How It Works](#how-it-works)
+- [Performance Characteristics](#performance-characteristics)
+- [Use Cases](#use-cases)
+- [Limitations](#limitations)
+- [Future Enhancements](#future-enhancements)
+- [Feature status (implemented vs. future)](#feature-status-implemented-vs-future)
+- [Testing](#testing)
+- [Integration with OpenTelemetry Collector](#integration-with-opentelemetry-collector)
+- [Important: Multiple Collector Instances](#important-multiple-collector-instances)
+- [License](#license)
+
 ## Configuration
 
 ```yaml
