@@ -685,10 +685,6 @@ func TestBenchmark_HashKeyGeneration(t *testing.T) {
 
 // Test: Extract attributes from different metric types
 func TestExtractAttributes_Gauge(t *testing.T) {
-	processor := &metricLimiterProcessor{
-		logger:         zaptest.NewLogger(t),
-		limitedMetrics: make(map[string]*metricConfig),
-	}
 
 	// Create a Gauge metric with attributes
 	metrics := pmetric.NewMetrics()
@@ -703,8 +699,8 @@ func TestExtractAttributes_Gauge(t *testing.T) {
 	dp.Attributes().PutStr("instance", "i-1")
 	dp.Attributes().PutStr("method", "GET")
 
-	// Extract attributes
-	attrs := processor.extractAttributes(metric)
+	// Extract attributes directly from the first data point
+	attrs := metric.Gauge().DataPoints().At(0).Attributes()
 
 	// Verify attributes were extracted
 	assert.Equal(t, 2, attrs.Len(), "should have 2 attributes")
@@ -718,10 +714,6 @@ func TestExtractAttributes_Gauge(t *testing.T) {
 
 // Test: Extract attributes from Sum metric
 func TestExtractAttributes_Sum(t *testing.T) {
-	processor := &metricLimiterProcessor{
-		logger:         zaptest.NewLogger(t),
-		limitedMetrics: make(map[string]*metricConfig),
-	}
 
 	// Create a Sum metric with attributes
 	metrics := pmetric.NewMetrics()
@@ -736,8 +728,8 @@ func TestExtractAttributes_Sum(t *testing.T) {
 	dp.Attributes().PutStr("service", "api")
 	dp.Attributes().PutStr("endpoint", "/users")
 
-	// Extract attributes
-	attrs := processor.extractAttributes(metric)
+	// Extract attributes directly from the first data point
+	attrs := metric.Sum().DataPoints().At(0).Attributes()
 
 	// Verify attributes were extracted
 	assert.Equal(t, 2, attrs.Len(), "should have 2 attributes")
@@ -802,14 +794,12 @@ func TestShouldDropMetric_PerLabelSet_WithAttributes(t *testing.T) {
 	dp3.Attributes().PutStr("instance", "i-2")
 	dp3.Attributes().PutStr("method", "GET")
 
-	// Process metrics through shouldDropMetric
-	dropped1 := processor.shouldDropMetric(m1)
+	// Process metrics through shouldDropByLabelSet (check first data point attrs)
+	dropped1 := processor.shouldDropByLabelSet(mc, m1.Gauge().DataPoints().At(0).Attributes())
 	assert.False(t, dropped1, "first occurrence of i-1/GET should be allowed")
-
-	dropped2 := processor.shouldDropMetric(m2)
+	dropped2 := processor.shouldDropByLabelSet(mc, m2.Gauge().DataPoints().At(0).Attributes())
 	assert.False(t, dropped2, "first occurrence of i-1/POST should be allowed (different label set)")
-
-	dropped3 := processor.shouldDropMetric(m3)
+	dropped3 := processor.shouldDropByLabelSet(mc, m3.Gauge().DataPoints().At(0).Attributes())
 	assert.False(t, dropped3, "first occurrence of i-2/GET should be allowed (different label set)")
 
 	// All three unique label sets should be tracked independently
@@ -817,13 +807,11 @@ func TestShouldDropMetric_PerLabelSet_WithAttributes(t *testing.T) {
 	assert.Equal(t, int64(0), mc.droppedCount, "should have dropped 0 on first occurrence")
 
 	// Second occurrences within rate interval should be dropped
-	dropped1_2 := processor.shouldDropMetric(m1)
+	dropped1_2 := processor.shouldDropByLabelSet(mc, m1.Gauge().DataPoints().At(0).Attributes())
 	assert.True(t, dropped1_2, "second occurrence of i-1/GET within interval should be dropped")
-
-	dropped2_2 := processor.shouldDropMetric(m2)
+	dropped2_2 := processor.shouldDropByLabelSet(mc, m2.Gauge().DataPoints().At(0).Attributes())
 	assert.True(t, dropped2_2, "second occurrence of i-1/POST within interval should be dropped")
-
-	dropped3_2 := processor.shouldDropMetric(m3)
+	dropped3_2 := processor.shouldDropByLabelSet(mc, m3.Gauge().DataPoints().At(0).Attributes())
 	assert.True(t, dropped3_2, "second occurrence of i-2/GET within interval should be dropped")
 
 	assert.Equal(t, int64(3), mc.droppedCount, "should have dropped 3 within-interval occurrences")
@@ -892,7 +880,7 @@ func TestShouldDropMetric_LabelDifferentiation(t *testing.T) {
 			dp.Attributes().PutStr(k, v)
 		}
 
-		dropped := processor.shouldDropMetric(m)
+		dropped := processor.shouldDropByLabelSet(mc, m.Gauge().DataPoints().At(0).Attributes())
 		assert.Equal(t, tc.expect, dropped, "%s first occurrence: should be allowed", tc.name)
 	}
 
@@ -914,7 +902,7 @@ func TestShouldDropMetric_LabelDifferentiation(t *testing.T) {
 			dp.Attributes().PutStr(k, v)
 		}
 
-		dropped := processor.shouldDropMetric(m)
+		dropped := processor.shouldDropByLabelSet(mc, m.Gauge().DataPoints().At(0).Attributes())
 		assert.True(t, dropped, "%s second occurrence: should be dropped", tc.name)
 	}
 

@@ -175,58 +175,8 @@ func (p *metricLimiterProcessor) processMetrics(
 	return md, nil
 }
 
-// shouldDropMetric determines if a metric should be dropped based on rate limiting.
-// This helper preserves backward compatibility for tests that exercise
-// metric-level behavior: it inspects the first data point in the metric and
-// applies the configured rate-limiting mode (name-only or per-label-set).
-// Returns true if the metric (based on its first data point) should be dropped.
-func (p *metricLimiterProcessor) shouldDropMetric(metric pmetric.Metric) bool {
-	metricName := metric.Name()
-
-	mc, ok := p.limitedMetrics[metricName]
-	if !ok {
-		return false // Not in rate limit list, allow
-	}
-
-	if !mc.perLabelSet {
-		// Rate limit by name only (backward compatible)
-		return p.shouldDropByName(mc)
-	}
-
-	// Rate limit by label set - extract attributes from metric data points
-	// For per-label-set mode, we check the attributes of the first data point.
-	return p.shouldDropByLabelSet(mc, p.extractAttributes(metric))
-}
-
-// extractAttributes extracts attributes from a metric's data points.
-// Handles all metric types: Gauge, Sum, Histogram, ExponentialHistogram, Summary.
-// Returns the attributes from the first data point found.
-func (p *metricLimiterProcessor) extractAttributes(metric pmetric.Metric) pcommon.Map {
-	switch metric.Type() {
-	case pmetric.MetricTypeGauge:
-		if dp := metric.Gauge().DataPoints(); dp.Len() > 0 {
-			return dp.At(0).Attributes()
-		}
-	case pmetric.MetricTypeSum:
-		if dp := metric.Sum().DataPoints(); dp.Len() > 0 {
-			return dp.At(0).Attributes()
-		}
-	case pmetric.MetricTypeHistogram:
-		if dp := metric.Histogram().DataPoints(); dp.Len() > 0 {
-			return dp.At(0).Attributes()
-		}
-	case pmetric.MetricTypeExponentialHistogram:
-		if dp := metric.ExponentialHistogram().DataPoints(); dp.Len() > 0 {
-			return dp.At(0).Attributes()
-		}
-	case pmetric.MetricTypeSummary:
-		if dp := metric.Summary().DataPoints(); dp.Len() > 0 {
-			return dp.At(0).Attributes()
-		}
-	}
-	// Fallback to empty map if no data points found
-	return pcommon.NewMap()
-}
+// NOTE: Metric-level helpers that inspected the first data point were removed
+// in favor of per-data-point processing inside `processMetrics`.
 
 // shouldDropByName determines if a metric should be dropped based on metric name only.
 // This implements name-only rate limiting mode using a sliding window approach.
