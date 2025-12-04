@@ -329,6 +329,32 @@ Potential improvements for future versions:
 - TTL-based cleanup of stale entries
 - Metrics/telemetry on dropped metric counts
 - Support for sampling strategies
+## Feature status (implemented vs. future)
+
+Below is the current implementation status for the items listed previously as "future enhancements":
+
+- Attribute-based filtering (match on attribute values): **Not implemented**
+  - Current behavior: `per_label_set=true` hashes the full set of attributes for each data point and tracks each unique label combination. There is no configuration to match or filter on a subset of attributes or specific attribute values.
+  - TODO: add an attribute-filter configuration in `MetricConfig` and update hashing/selection logic.
+
+- Per-metric rate intervals: **Implemented**
+  - `getMetricConfig` supports per-metric overrides for `rate_interval_seconds` and tests cover this behavior (`TestIntegration_PerMetricOverrides`).
+
+- Regex pattern matching for metric names: **Not implemented**
+  - Current behavior: exact metric-name matching against `metric_names` only.
+  - TODO: add `metric_patterns` (precompiled regexes) and match during processing; include performance tests.
+
+- TTL-based cleanup of stale entries: **Partially implemented (scaffolded, not active)**
+  - `metricConfig` includes `cardinalityTTLNanos` (populated from `cardinality_ttl_seconds`), but there is currently no active eviction or periodic cleanup using this TTL. The LRU cache only evicts by cardinality.
+  - TODO: enforce TTL either on access in `shouldDropByLabelSet` or via a periodic cleanup goroutine.
+
+- Metrics/telemetry on dropped metric counts: **Partially implemented (internal counters exist, not exported)**
+  - `metricConfig` maintains internal counters (`allowedCount`, `droppedCount`, `evictedCount`, `collisionCount`) and tests assert on them, but these are not currently exposed as OpenTelemetry metrics or collector telemetry.
+  - TODO: register and report these counters via the collector telemetry API or expose as `pmetric` metrics.
+
+- Support for sampling strategies (probabilistic/adaptive sampling): **Not implemented**
+  - Current behavior: deterministic sliding-window allow/drop logic. No sampling strategies are present.
+  - TODO: design and implement sampling (per-metric or global, deterministic vs probabilistic).
 
 ## Testing
 
