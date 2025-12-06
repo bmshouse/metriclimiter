@@ -131,7 +131,7 @@ if perLabelSet {
 
 **Key Design:**
 
-#### Metric Hierarchy Navigation
+#### Metric Hierarchy Navigation (Per-Data-Point Processing)
 
 ```go
 resourceMetrics := md.ResourceMetrics()
@@ -142,9 +142,36 @@ for i := 0; i < resourceMetrics.Len(); i++ {
         sm := scopeMetrics.At(j)
         metrics := sm.Metrics()
 
-        // Use RemoveIf for zero-copy filtering
+        // Iterate each metric and filter at the data-point level. This
+        // allows different label-sets within the same Metric to be
+        // rate-limited independently.
+        for k := 0; k < metrics.Len(); k++ {
+            metric := metrics.At(k)
+            mc, ok := p.limitedMetrics[metric.Name()]
+            if !ok {
+                continue // not configured for rate limiting
+            }
+
+            switch metric.Type() {
+            case pmetric.MetricTypeGauge:
+                dps := metric.Gauge().DataPoints()
+                if mc.perLabelSet {
+                    dps.RemoveIf(func(dp pmetric.NumberDataPoint) bool {
+                        return p.shouldDropByLabelSet(mc, dp.Attributes())
+                    })
+                } else {
+                    dps.RemoveIf(func(dp pmetric.NumberDataPoint) bool {
+                        return p.shouldDropByName(mc)
+                    })
+                }
+            // handle other metric types (Sum, Histogram, ExponentialHistogram, Summary) similarly
+            }
+        }
+
+        // Remove any metrics that have no remaining data points.
         metrics.RemoveIf(func(metric pmetric.Metric) bool {
-            return p.shouldDropMetric(metric)
+            // return true if metric.DataPoints().Len() == 0 for the specific type
+            return false // simplified here for brevity
         })
     }
 }

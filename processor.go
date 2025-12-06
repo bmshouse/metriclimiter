@@ -77,11 +77,97 @@ func (p *metricLimiterProcessor) processMetrics(
 			sm := scopeMetrics.At(j)
 			metrics := sm.Metrics()
 
-			// Use RemoveIf for efficient zero-copy filtering
+			// Process each metric and remove only the data points that
+			// are rate-limited. We operate at the data-point level so
+			// different label-sets in the same metric are treated
+			// independently.
+			for k := 0; k < metrics.Len(); k++ {
+				metric := metrics.At(k)
+				metricName := metric.Name()
+
+				mc, ok := p.limitedMetrics[metricName]
+				if !ok {
+					// Not rate-limited, leave all data points
+					continue
+				}
+
+				switch metric.Type() {
+				case pmetric.MetricTypeGauge:
+					dps := metric.Gauge().DataPoints()
+					if mc.perLabelSet {
+						dps.RemoveIf(func(dp pmetric.NumberDataPoint) bool {
+							return p.shouldDropByLabelSet(mc, dp.Attributes())
+						})
+					} else {
+						dps.RemoveIf(func(dp pmetric.NumberDataPoint) bool {
+							return p.shouldDropByName(mc)
+						})
+					}
+				case pmetric.MetricTypeSum:
+					dps := metric.Sum().DataPoints()
+					if mc.perLabelSet {
+						dps.RemoveIf(func(dp pmetric.NumberDataPoint) bool {
+							return p.shouldDropByLabelSet(mc, dp.Attributes())
+						})
+					} else {
+						dps.RemoveIf(func(dp pmetric.NumberDataPoint) bool {
+							return p.shouldDropByName(mc)
+						})
+					}
+				case pmetric.MetricTypeHistogram:
+					dps := metric.Histogram().DataPoints()
+					if mc.perLabelSet {
+						dps.RemoveIf(func(dp pmetric.HistogramDataPoint) bool {
+							return p.shouldDropByLabelSet(mc, dp.Attributes())
+						})
+					} else {
+						dps.RemoveIf(func(dp pmetric.HistogramDataPoint) bool {
+							return p.shouldDropByName(mc)
+						})
+					}
+				case pmetric.MetricTypeExponentialHistogram:
+					dps := metric.ExponentialHistogram().DataPoints()
+					if mc.perLabelSet {
+						dps.RemoveIf(func(dp pmetric.ExponentialHistogramDataPoint) bool {
+							return p.shouldDropByLabelSet(mc, dp.Attributes())
+						})
+					} else {
+						dps.RemoveIf(func(dp pmetric.ExponentialHistogramDataPoint) bool {
+							return p.shouldDropByName(mc)
+						})
+					}
+				case pmetric.MetricTypeSummary:
+					dps := metric.Summary().DataPoints()
+					if mc.perLabelSet {
+						dps.RemoveIf(func(dp pmetric.SummaryDataPoint) bool {
+							return p.shouldDropByLabelSet(mc, dp.Attributes())
+						})
+					} else {
+						dps.RemoveIf(func(dp pmetric.SummaryDataPoint) bool {
+							return p.shouldDropByName(mc)
+						})
+					}
+				default:
+					// Unknown/unsupported metric type: do nothing
+				}
+			}
+
+			// Remove any metrics that now have zero data points (all data points were filtered).
 			metrics.RemoveIf(func(metric pmetric.Metric) bool {
-				// Get attributes from the metric's data points
-				// For Gauge, Sum, Histogram, ExponentialHistogram
-				return p.shouldDropMetric(metric)
+				switch metric.Type() {
+				case pmetric.MetricTypeGauge:
+					return metric.Gauge().DataPoints().Len() == 0
+				case pmetric.MetricTypeSum:
+					return metric.Sum().DataPoints().Len() == 0
+				case pmetric.MetricTypeHistogram:
+					return metric.Histogram().DataPoints().Len() == 0
+				case pmetric.MetricTypeExponentialHistogram:
+					return metric.ExponentialHistogram().DataPoints().Len() == 0
+				case pmetric.MetricTypeSummary:
+					return metric.Summary().DataPoints().Len() == 0
+				default:
+					return false
+				}
 			})
 		}
 	}
@@ -89,57 +175,8 @@ func (p *metricLimiterProcessor) processMetrics(
 	return md, nil
 }
 
-// shouldDropMetric determines if a metric should be dropped based on rate limiting.
-// It checks if the metric is in the rate limit list and applies the appropriate
-// rate limiting logic (name-only or per-label-set mode).
-// Returns true if the metric should be dropped (filtered), false if allowed.
-func (p *metricLimiterProcessor) shouldDropMetric(metric pmetric.Metric) bool {
-	metricName := metric.Name()
-
-	mc, ok := p.limitedMetrics[metricName]
-	if !ok {
-		return false // Not in rate limit list, allow
-	}
-
-	if !mc.perLabelSet {
-		// Rate limit by name only (backward compatible)
-		return p.shouldDropByName(mc)
-	}
-
-	// Rate limit by label set - extract attributes from metric data points
-	// For per-label-set mode, we need to check each data point's attributes
-	return p.shouldDropByLabelSet(mc, p.extractAttributes(metric))
-}
-
-// extractAttributes extracts attributes from a metric's data points.
-// Handles all metric types: Gauge, Sum, Histogram, ExponentialHistogram, Summary.
-// Returns the attributes from the first data point found.
-func (p *metricLimiterProcessor) extractAttributes(metric pmetric.Metric) pcommon.Map {
-	switch metric.Type() {
-	case pmetric.MetricTypeGauge:
-		if dp := metric.Gauge().DataPoints(); dp.Len() > 0 {
-			return dp.At(0).Attributes()
-		}
-	case pmetric.MetricTypeSum:
-		if dp := metric.Sum().DataPoints(); dp.Len() > 0 {
-			return dp.At(0).Attributes()
-		}
-	case pmetric.MetricTypeHistogram:
-		if dp := metric.Histogram().DataPoints(); dp.Len() > 0 {
-			return dp.At(0).Attributes()
-		}
-	case pmetric.MetricTypeExponentialHistogram:
-		if dp := metric.ExponentialHistogram().DataPoints(); dp.Len() > 0 {
-			return dp.At(0).Attributes()
-		}
-	case pmetric.MetricTypeSummary:
-		if dp := metric.Summary().DataPoints(); dp.Len() > 0 {
-			return dp.At(0).Attributes()
-		}
-	}
-	// Fallback to empty map if no data points found
-	return pcommon.NewMap()
-}
+// NOTE: Metric-level helpers that inspected the first data point were removed
+// in favor of per-data-point processing inside `processMetrics`.
 
 // shouldDropByName determines if a metric should be dropped based on metric name only.
 // This implements name-only rate limiting mode using a sliding window approach.

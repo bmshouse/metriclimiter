@@ -685,10 +685,6 @@ func TestBenchmark_HashKeyGeneration(t *testing.T) {
 
 // Test: Extract attributes from different metric types
 func TestExtractAttributes_Gauge(t *testing.T) {
-	processor := &metricLimiterProcessor{
-		logger:         zaptest.NewLogger(t),
-		limitedMetrics: make(map[string]*metricConfig),
-	}
 
 	// Create a Gauge metric with attributes
 	metrics := pmetric.NewMetrics()
@@ -703,8 +699,8 @@ func TestExtractAttributes_Gauge(t *testing.T) {
 	dp.Attributes().PutStr("instance", "i-1")
 	dp.Attributes().PutStr("method", "GET")
 
-	// Extract attributes
-	attrs := processor.extractAttributes(metric)
+	// Extract attributes directly from the first data point
+	attrs := metric.Gauge().DataPoints().At(0).Attributes()
 
 	// Verify attributes were extracted
 	assert.Equal(t, 2, attrs.Len(), "should have 2 attributes")
@@ -718,10 +714,6 @@ func TestExtractAttributes_Gauge(t *testing.T) {
 
 // Test: Extract attributes from Sum metric
 func TestExtractAttributes_Sum(t *testing.T) {
-	processor := &metricLimiterProcessor{
-		logger:         zaptest.NewLogger(t),
-		limitedMetrics: make(map[string]*metricConfig),
-	}
 
 	// Create a Sum metric with attributes
 	metrics := pmetric.NewMetrics()
@@ -736,8 +728,8 @@ func TestExtractAttributes_Sum(t *testing.T) {
 	dp.Attributes().PutStr("service", "api")
 	dp.Attributes().PutStr("endpoint", "/users")
 
-	// Extract attributes
-	attrs := processor.extractAttributes(metric)
+	// Extract attributes directly from the first data point
+	attrs := metric.Sum().DataPoints().At(0).Attributes()
 
 	// Verify attributes were extracted
 	assert.Equal(t, 2, attrs.Len(), "should have 2 attributes")
@@ -802,14 +794,12 @@ func TestShouldDropMetric_PerLabelSet_WithAttributes(t *testing.T) {
 	dp3.Attributes().PutStr("instance", "i-2")
 	dp3.Attributes().PutStr("method", "GET")
 
-	// Process metrics through shouldDropMetric
-	dropped1 := processor.shouldDropMetric(m1)
+	// Process metrics through shouldDropByLabelSet (check first data point attrs)
+	dropped1 := processor.shouldDropByLabelSet(mc, m1.Gauge().DataPoints().At(0).Attributes())
 	assert.False(t, dropped1, "first occurrence of i-1/GET should be allowed")
-
-	dropped2 := processor.shouldDropMetric(m2)
+	dropped2 := processor.shouldDropByLabelSet(mc, m2.Gauge().DataPoints().At(0).Attributes())
 	assert.False(t, dropped2, "first occurrence of i-1/POST should be allowed (different label set)")
-
-	dropped3 := processor.shouldDropMetric(m3)
+	dropped3 := processor.shouldDropByLabelSet(mc, m3.Gauge().DataPoints().At(0).Attributes())
 	assert.False(t, dropped3, "first occurrence of i-2/GET should be allowed (different label set)")
 
 	// All three unique label sets should be tracked independently
@@ -817,13 +807,11 @@ func TestShouldDropMetric_PerLabelSet_WithAttributes(t *testing.T) {
 	assert.Equal(t, int64(0), mc.droppedCount, "should have dropped 0 on first occurrence")
 
 	// Second occurrences within rate interval should be dropped
-	dropped1_2 := processor.shouldDropMetric(m1)
+	dropped1_2 := processor.shouldDropByLabelSet(mc, m1.Gauge().DataPoints().At(0).Attributes())
 	assert.True(t, dropped1_2, "second occurrence of i-1/GET within interval should be dropped")
-
-	dropped2_2 := processor.shouldDropMetric(m2)
+	dropped2_2 := processor.shouldDropByLabelSet(mc, m2.Gauge().DataPoints().At(0).Attributes())
 	assert.True(t, dropped2_2, "second occurrence of i-1/POST within interval should be dropped")
-
-	dropped3_2 := processor.shouldDropMetric(m3)
+	dropped3_2 := processor.shouldDropByLabelSet(mc, m3.Gauge().DataPoints().At(0).Attributes())
 	assert.True(t, dropped3_2, "second occurrence of i-2/GET within interval should be dropped")
 
 	assert.Equal(t, int64(3), mc.droppedCount, "should have dropped 3 within-interval occurrences")
@@ -892,7 +880,7 @@ func TestShouldDropMetric_LabelDifferentiation(t *testing.T) {
 			dp.Attributes().PutStr(k, v)
 		}
 
-		dropped := processor.shouldDropMetric(m)
+		dropped := processor.shouldDropByLabelSet(mc, m.Gauge().DataPoints().At(0).Attributes())
 		assert.Equal(t, tc.expect, dropped, "%s first occurrence: should be allowed", tc.name)
 	}
 
@@ -914,10 +902,152 @@ func TestShouldDropMetric_LabelDifferentiation(t *testing.T) {
 			dp.Attributes().PutStr(k, v)
 		}
 
-		dropped := processor.shouldDropMetric(m)
+		dropped := processor.shouldDropByLabelSet(mc, m.Gauge().DataPoints().At(0).Attributes())
 		assert.True(t, dropped, "%s second occurrence: should be dropped", tc.name)
 	}
 
 	// Verify all were dropped
 	assert.Equal(t, int64(3), mc.droppedCount, "should have dropped 3 within-interval occurrences")
+}
+
+// New tests for per-data-point behavior inside a single Metric
+func TestProcessMetrics_PerDataPoint_PerLabelSet(t *testing.T) {
+	processor := &metricLimiterProcessor{
+		config: &Config{
+			RateIntervalSeconds:     1,
+			PerLabelSet:             true,
+			MaxCardinalityPerMetric: 100000,
+		},
+		logger:         zaptest.NewLogger(t),
+		limitedMetrics: make(map[string]*metricConfig),
+	}
+
+	mc, err := processor.getMetricConfig("test.metric", processor.config)
+	assert.NoError(t, err)
+	processor.limitedMetrics["test.metric"] = mc
+
+	// Create a single Metric with three data points: A, B, A
+	metrics := pmetric.NewMetrics()
+	rm := metrics.ResourceMetrics().AppendEmpty()
+	sm := rm.ScopeMetrics().AppendEmpty()
+	m := sm.Metrics().AppendEmpty()
+	m.SetName("test.metric")
+	g := m.SetEmptyGauge()
+
+	// dp A
+	dpA1 := g.DataPoints().AppendEmpty()
+	dpA1.SetDoubleValue(1.0)
+	dpA1.Attributes().PutStr("instance", "i-1")
+
+	// dp B
+	dpB := g.DataPoints().AppendEmpty()
+	dpB.SetDoubleValue(2.0)
+	dpB.Attributes().PutStr("instance", "i-2")
+
+	// dp A (duplicate label set)
+	dpA2 := g.DataPoints().AppendEmpty()
+	dpA2.SetDoubleValue(3.0)
+	dpA2.Attributes().PutStr("instance", "i-1")
+
+	// Process metrics: first A and B allowed, second A dropped
+	result, err := processor.processMetrics(context.Background(), metrics)
+	assert.NoError(t, err)
+
+	// Metric should remain and have 2 data points (A1 and B)
+	resMetrics := result.ResourceMetrics().At(0).ScopeMetrics().At(0).Metrics()
+	assert.Equal(t, 1, resMetrics.Len(), "one metric should remain")
+	got := resMetrics.At(0).Gauge().DataPoints().Len()
+	assert.Equal(t, 2, got, "should have 2 allowed data points (A and B)")
+
+	// Counts: allowed should be 2 (first A, first B), dropped 1 (second A)
+	assert.Equal(t, int64(2), mc.allowedCount)
+	assert.Equal(t, int64(1), mc.droppedCount)
+}
+
+func TestProcessMetrics_PerDataPoint_NameOnly(t *testing.T) {
+	processor := &metricLimiterProcessor{
+		config: &Config{
+			RateIntervalSeconds:     60,
+			PerLabelSet:             false,
+			MaxCardinalityPerMetric: 100000,
+		},
+		logger:         zaptest.NewLogger(t),
+		limitedMetrics: make(map[string]*metricConfig),
+	}
+
+	mc, err := processor.getMetricConfig("test.nameonly", processor.config)
+	assert.NoError(t, err)
+	processor.limitedMetrics["test.nameonly"] = mc
+
+	// Single metric with three data points (different attributes)
+	metrics := pmetric.NewMetrics()
+	rm := metrics.ResourceMetrics().AppendEmpty()
+	sm := rm.ScopeMetrics().AppendEmpty()
+	m := sm.Metrics().AppendEmpty()
+	m.SetName("test.nameonly")
+	g := m.SetEmptyGauge()
+
+	dp1 := g.DataPoints().AppendEmpty()
+	dp1.SetDoubleValue(1.0)
+	dp1.Attributes().PutStr("a", "1")
+
+	dp2 := g.DataPoints().AppendEmpty()
+	dp2.SetDoubleValue(2.0)
+	dp2.Attributes().PutStr("a", "2")
+
+	dp3 := g.DataPoints().AppendEmpty()
+	dp3.SetDoubleValue(3.0)
+	dp3.Attributes().PutStr("a", "3")
+
+	result, err := processor.processMetrics(context.Background(), metrics)
+	assert.NoError(t, err)
+
+	// Name-only mode should allow only the first data point
+	resMetrics := result.ResourceMetrics().At(0).ScopeMetrics().At(0).Metrics()
+	assert.Equal(t, 1, resMetrics.Len(), "one metric should remain")
+	got := resMetrics.At(0).Gauge().DataPoints().Len()
+	assert.Equal(t, 1, got, "should have only 1 allowed data point in name-only mode")
+
+	// Counts: allowed 1, dropped 2
+	assert.Equal(t, int64(1), mc.allowedCount)
+	assert.Equal(t, int64(2), mc.droppedCount)
+}
+
+func TestProcessMetrics_RemoveEmptyMetric(t *testing.T) {
+	processor := &metricLimiterProcessor{
+		logger:         zaptest.NewLogger(t),
+		limitedMetrics: make(map[string]*metricConfig),
+	}
+
+	// Create metric config that will cause immediate drops by setting lastSeenTimestamp to now
+	mc := &metricConfig{
+		name:              "test.remove",
+		rateIntervalNanos: 60 * 1e9,
+		lastSeenTimestamp: time.Now().UnixNano(),
+	}
+	processor.limitedMetrics["test.remove"] = mc
+
+	// Create a metric with two data points that should both be dropped
+	metrics := pmetric.NewMetrics()
+	rm := metrics.ResourceMetrics().AppendEmpty()
+	sm := rm.ScopeMetrics().AppendEmpty()
+	m := sm.Metrics().AppendEmpty()
+	m.SetName("test.remove")
+	g := m.SetEmptyGauge()
+
+	dp1 := g.DataPoints().AppendEmpty()
+	dp1.SetDoubleValue(1.0)
+	dp2 := g.DataPoints().AppendEmpty()
+	dp2.SetDoubleValue(2.0)
+
+	result, err := processor.processMetrics(context.Background(), metrics)
+	assert.NoError(t, err)
+
+	// Metric should be removed entirely (no metrics remain)
+	resRM := result.ResourceMetrics()
+	assert.Equal(t, 1, resRM.Len(), "resource metrics should still exist")
+	resSM := resRM.At(0).ScopeMetrics()
+	assert.Equal(t, 1, resSM.Len(), "scope metrics should still exist")
+	resMetrics := resSM.At(0).Metrics()
+	assert.Equal(t, 0, resMetrics.Len(), "metric with all data points dropped should be removed")
 }
